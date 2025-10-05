@@ -1,40 +1,18 @@
-# louds-trie
 
-LOUDS-trie implementation example (C++)
+## Changes
+- The original `main.cpp` used random key generation for testing.
+-I replaced it with a CLI program (`merge_cli.cpp`) that accepts two sorted key files and merges them.
 
-## Results
+## Requirements
+- `g++` with C++17 support
+-  ensure `-mbmi2` is supported by your CPU
 
-```
-$ export LC_ALL=C
+## Build
+Clean and rebuild the project:
 
-$ ls -sh1 data/
-total 344M
-303M enwiki-20191001-all-titles-in-ns0
- 41M jawiki-20191001-all-titles-in-ns0
+```bash
+make clean
+make
 
-$ sort data/jawiki-20191001-all-titles-in-ns0 > data/jawiki-20191001-all-titles-in-ns0.sorted
-$ sort data/enwiki-20191001-all-titles-in-ns0 > data/enwiki-20191001-all-titles-in-ns0.sorted
 
-$ make
-g++ -O2 -Wall -Wextra -march=native *.cpp -o louds-trie
-
-$ ./louds-trie < data/jawiki-20191001-all-titles-in-ns0.sorted
-build = 135.789 ns/key
-#keys = 1887667
-#nodes = 18970273
-size = 28208993 bytes
-seq. lookup = 460.763 ns/key
-rnd. lookup = 1398.13 ns/key
-
-$ ./louds-trie < data/enwiki-20191001-all-titles-in-ns0.sorted
-build = 123.173 ns/key
-#keys = 14837096
-#nodes = 130740728
-size = 194319332 bytes
-seq. lookup = 438.351 ns/key
-rnd. lookup = 2573.98 ns/key
-```
-
-## See also
-
-https://github.com/s-yata/louds-patricia
+./merge_cli keys.txt keys2.txt

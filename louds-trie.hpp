@@ -19,6 +19,7 @@ class Trie {
   void add(const string &key);
   // build builds indexes for lookup.
   void build();
+  friend Trie merge_trie(const Trie& a, const Trie& b);
 
   // lookup searches for query and returns its ID on success or -1 on failure.
   int64_t lookup(const string &query) const;
@@ -30,9 +31,12 @@ class Trie {
   // size returns the approximate size of assigned memory.
   uint64_t size() const;
 
+
  private:
   TrieImpl *impl_;
 };
+
+Trie merge_trie(const Trie& a, const Trie& b);
 
 }  // namespace louds
 

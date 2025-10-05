@@ -3,6 +3,7 @@
 #include <chrono>
 #include <iostream>
 #include <vector>
+#include <random>
 
 #include "louds-trie.hpp"
 
@@ -46,7 +47,9 @@ int main() {
     assert(ids[i] == i);
   }
 
-  random_shuffle(keys.begin(), keys.end());
+  std::mt19937 rng(std::random_device{}());   // seed a PRNG
+  std::shuffle(keys.begin(), keys.end(), rng);
+
 
   begin = high_resolution_clock::now();
   for (uint64_t i = 0; i < keys.size(); ++i) {

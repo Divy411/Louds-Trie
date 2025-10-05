@@ -198,6 +198,15 @@ class TrieImpl {
   uint64_t size() const {
     return size_;
   }
+  // Gives read only access to the internal levels of the trie
+  const std::vector<Level>& levels() const { 
+    return levels_; 
+  }
+
+  // Checks if the trie includes the empty string as a key
+  bool has_empty_key() const { 
+    return levels_[0].outs.get(0) != 0; 
+  }
 
  private:
   vector<Level> levels_;
@@ -217,13 +226,14 @@ TrieImpl::TrieImpl()
 }
 
 void TrieImpl::add(const string &key) {
-  assert(key > last_key_);
   if (key.empty()) {
     levels_[0].outs.set(0, 1);
     ++levels_[1].offset;
     ++n_keys_;
     return;
   }
+  assert(key > last_key_); //moved it downward so that the trie could first handle the special case of adding  
+                          //the empty string before enforcing the lexicographic order for all subsequent (non-empty) keys.
   if (key.length() + 1 >= levels_.size()) {
     levels_.resize(key.length() + 2);
   }
@@ -358,5 +368,205 @@ uint64_t Trie::n_nodes() const {
 uint64_t Trie::size() const {
   return impl_->size();
 }
+
+
+
+
+// Determines the range of child nodes in the next level for a given node.
+// reused from node traversal logic in the lookup() function.
+inline void ChildRange(const Level& level, uint64_t& nodeId, uint64_t& begin, uint64_t& endBitsBegin) {
+    uint64_t nodePos = 0;
+
+    if (nodeId != 0) {
+        // Select locates the position of the (nodeId - 1)th 1-bit and move to the next bit
+        nodePos = level.louds.select(nodeId - 1) + 1;
+
+        // // Adjust nodeId to index within labels
+        nodeId = nodePos - nodeId;
+    }
+  
+    uint64_t end = nodePos;
+
+    // Extract the bits starting at the position of this node
+    uint64_t word = level.louds.words[end / 64] >> (end % 64);
+
+    // If the current word is all zero scan forward until we find a 1-bit
+    if (word == 0) {
+        end += 64 - (end % 64);
+        word = level.louds.words[end / 64];
+
+        while (word == 0) {
+            end += 64;
+            word = level.louds.words[end / 64];
+        }
+    }
+
+    // Count trailing zeros to locate the next 1-bit
+    end += Ctz(word);
+
+    // Begin index is updated nodeId. endBitsBegin is relative position in labels
+    begin = nodeId;
+    endBitsBegin = begin + end - nodePos;
+}
+// A depth-first iterator that walks through all the keys stored in a LOUDS trie
+class KeyIterator {
+ public:
+ // Constructor - it needs a TrieImpl to walk over.
+  explicit KeyIterator(const TrieImpl& T)
+      : levels_(T.levels()), finished_(false) {
+
+    //  If the trie has no key, we can return.
+    if (levels_.size() <= 1) { 
+      finished_ = true; 
+      return; 
+    }
+
+    // Start with the root frame. Actual keys start from level 1.
+    Frame root;
+    root.depth = 0;
+    root.node_id = 0;
+    // Determine the child range for root from level 1
+    {
+      uint64_t nid = 0, b = 0, e = 0;
+      ChildRange(levels_[1], nid, b, e);
+      root.begin = b; // Start index of root’s children
+      root.end = e;  // End index of root’s children
+      root.next = b; // Next child to explore is at begin
+    }
+    root.yielded = true;  // root itself is not a key 
+    frames_.push_back(root); // Pushing root frame onto DFS stack
+  }
+
+  // Returns true and writes the next key into out if available.
+  // Otherwise returns false to mean that it is end of iteration.
+  bool next(std::string& out) {
+    if (finished_) return false;
+
+    while (!frames_.empty()) {
+      Frame& f = frames_.back();
+
+      // Yield the key if this node is terminal and not already returned
+      if (f.depth >= 1 && !f.yielded) {
+        f.yielded = true;
+
+        if (levels_[f.depth].outs.get(f.node_id)) {
+          out.assign(key_.begin(), key_.end());
+          return true;
+        }
+      }
+
+      // Try to descend into the next child node if one is available
+      if (f.next < f.end) {
+        const uint64_t child_id = f.next++;
+        const uint64_t child_depth = f.depth + 1;
+
+        // Append this child's label to the key being built
+        key_.push_back(static_cast<char>(levels_[child_depth].labels[child_id]));
+
+        Frame child;
+        child.depth = child_depth;
+        child.node_id = child_id;
+        child.yielded = false;
+
+        // Check if this node has children by looking into the next level
+        if (child_depth + 1 < levels_.size()) {
+          uint64_t nid = child.node_id, b = 0, e = 0;
+          ChildRange(levels_[child_depth + 1], nid, b, e); 
+          child.begin = b; 
+          child.end = e; 
+          child.next = b;
+        } else {
+          // Reached a leaf node
+          child.begin = child.end = child.next = 0;
+        }
+        frames_.push_back(child);
+        continue;
+      }
+
+      // If there are no more children to explore at this node we will backtrack
+      if (f.depth >= 1) 
+      {
+        key_.pop_back(); // Remove the label we added when descending
+      }
+      frames_.pop_back();  // Remove this frame from the stack
+    }
+
+    // No more keys left
+    finished_ = true;
+    return false;
+  }
+
+ private:
+  struct Frame {
+    uint64_t depth = 0;       
+    uint64_t node_id = 0;     // global child index at this level
+    uint64_t begin = 0, end = 0, next = 0;  // children range in labels[]
+    bool yielded = false;     // whether terminal check was done
+  };
+  const std::vector<Level>& levels_; 
+  std::vector<Frame> frames_; 
+  std::string key_; //current key being built during traversal
+                   // whem we descend through trie levels. It is modified when we push/pop frames.
+  bool finished_;
+};
+
+
+// Merge two built tries into a new LOUDS trie (set union, duplicates removed).
+// Complexity: Θ(total length of unique output keys); Extra space: O(max depth).
+Trie merge_trie(const Trie& a, const Trie& b) {
+  Trie out;
+
+  // // If either trie contains the empty string we add it.
+    if (a.impl_->has_empty_key() || b.impl_->has_empty_key()) {
+
+    out.add(std::string());
+  }
+  
+  // Set up depth-first iterators for both input tries.
+  KeyIterator iter_a(*a.impl_);
+  KeyIterator iter_ab(*b.impl_);
+  
+  std::string key_a, key_b;
+
+  // Initialize both iterators to fetch their first key (if any).
+  bool has_a = iter_a.next(key_a);
+  bool has_b = iter_ab.next(key_b);
+  
+  // Walk through both tries in sorted order and merge keys.
+  while (has_a || has_b) {
+    if (has_a && has_b) {
+      if (key_a < key_b) {
+        out.add(key_a);     // key_a is smaller, add it to the result
+
+        has_a = iter_a.next(key_a); 
+
+      } else if (key_b < key_a) {
+        out.add(key_b);  
+
+        has_b = iter_ab.next(key_b);
+
+      } else {
+        // If both keys are equal, add it only once
+        out.add(key_a);
+
+        has_a = iter_a.next(key_a);  // advance both to skip duplicates
+
+        has_b = iter_ab.next(key_b);
+      }
+    } else if (has_a) {
+      // Only iterator A has keys left. dump them all
+      out.add(key_a);
+      has_a = iter_a.next(key_a);
+    } else {
+      // Only iterator B has keys left. dump them all
+      out.add(key_b);
+      has_b = iter_ab.next(key_b);
+    }
+  }
+
+  out.build();
+  return out;
+}
+
 
 }  // namespace louds
